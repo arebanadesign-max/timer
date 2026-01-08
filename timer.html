@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>10秒後に開始（音声あり）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+    .wrap {
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px; padding: 24px;
+    }
+    /* 表示を大きく（端末幅に合わせて伸縮） */
+    .display {
+      font-weight: 900;
+      letter-spacing: 1px;
+      text-align: center;
+      line-height: 1.0;
+      font-size: clamp(96px, 14vw, 180px);
+    }
+    .sub {
+      font-size: 16px; opacity: 0.75; text-align: center; max-width: 560px;
+    }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+    button {
+      font-size: 18px; padding: 14px 18px; border-radius: 12px; border: 1px solid #ccc;
+      background: #fff; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    label { font-size: 16px; user-select: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="display" id="display">READY</div>
+    <div class="sub" id="sub">開始を押すと10秒カウントダウン後に計測します（最大3分）</div>
+
+    <div class="row">
+      <button id="startBtn">開始</button>
+      <button id="resetBtn" disabled>リセット</button>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="repeatChk" /> 終了後に自動でリピート</label>
+      <label><input type="checkbox" id="voiceChk" checked /> 音声読み上げ</label>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const display = document.getElementById("display");
+  const sub = document.getElementById("sub");
+  const startBtn = document.getElementById("startBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const repeatChk = document.getElementById("repeatChk");
+  const voiceChk = document.getElementById("voiceChk");
+
+  // 設定
+  const PRE_COUNTDOWN_SEC = 10;
+  const MAX_UP_SEC = 180;     // 3分
+  const ANNOUNCE_EVERY = 5;   // 5秒おき読み上げ
+
+  let state = "idle"; // idle | pre | run | done
+  let timerId = null;
+  let startTimeMs = 0;
+  let remainingPre = PRE_COUNTDOWN_SEC;
+  let lastAnnouncedSec = 0;
+
+  // 音声（Web Speech API）
+  function speak(text) {
+    if (!voiceChk.checked) return;
+    if (!("speechSynthesis" in window)) return;
+
+    // 短いフレーズを確実にするため、直前の発話をキャンセルしてから再生
+    try { window.speechSynthesis.cancel(); } catch {}
+
+    const u = new SpeechSynthesisUtterance(text);
+    const voices = window.speechSynthesis.getVoices?.() || [];
+    const ja = voices.find(v => (v.lang || "").toLowerCase().startsWith("ja"));
+    if (ja) u.voice = ja;
+    u.lang = ja?.lang || "ja-JP";
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    u.volume = 1.0;
+
+    window.speechSynthesis.speak(u);
+  }
+
+  // iOS/Safari対策：ボイス一覧を一度ロード
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.getVoices();
+  }
+
+  function setButtons() {
+    const running = (state === "pre" || state === "run");
+    startBtn.disabled = running;
+    resetBtn.disabled = (state === "idle");
+  }
+
+  function fmt(sec) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+  }
+
+  function stopTimer() {
+    if (timerId) clearInterval(timerId);
+    timerId = null;
+  }
+
+  function resetAll() {
+    stopTimer();
+    state = "idle";
+    remainingPre = PRE_COUNTDOWN_SEC;
+    lastAnnouncedSec = 0;
+    display.textContent = "READY";
+    sub.textContent = "開始を押すと10秒カウントダウン後に計測します（最大3分）";
+    setButtons();
+  }
+
+  function startPre() {
+    state = "pre";
+    remainingPre = PRE_COUNTDOWN_SEC;
+    display.textContent = String(remainingPre);
+    sub.textContent = "カウントダウン中…";
+    setButtons();
+
+    // 音声：10秒前
+    speak("10秒前");
+
+    stopTimer();
+    timerId = setInterval(() => {
+      remainingPre -= 1;
+
+      if (remainingPre <= 0) {
+        stopTimer();
+        startRun();
+        return;
+      }
+
+      display.textContent = String(remainingPre);
+
+      // 音声：5秒前
+      if (remainingPre === 5) speak("5秒前");
+
+      // 音声：3,2,1
+      if (remainingPre === 3) speak("3");
+      if (remainingPre === 2) speak("2");
+      if (remainingPre === 1) speak("1");
+
+    }, 1000);
+  }
+
+  function startRun() {
+    state = "run";
+    startTimeMs = Date.now();
+    lastAnnouncedSec = 0;
+    display.textContent = "00:00";
+    sub.textContent = "計測中…";
+    setButtons();
+
+    // 音声：スタート
+    speak("スタート");
+
+    stopTimer();
+    timerId = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTimeMs) / 1000);
+
+      if (elapsed >= MAX_UP_SEC) {
+        display.textContent = fmt(MAX_UP_SEC);
+        finish();
+        return;
+      }
+
+      display.textContent = fmt(elapsed);
+
+      // 5秒ごと読み上げ（5,10,15...）
+      if (elapsed > 0 && elapsed % ANNOUNCE_EVERY === 0 && elapsed !== lastAnnouncedSec) {
+        lastAnnouncedSec = elapsed;
+        speak(`${elapsed}秒`);
+      }
+    }, 120);
+  }
+
+  function finish() {
+    stopTimer();
+    state = "done";
+    sub.textContent = "終了";
+    setButtons();
+
+    if (repeatChk.checked) {
+      setTimeout(() => startPre(), 500);
+    }
+  }
+
+  startBtn.addEventListener("click", () => {
+    if (state === "idle" || state === "done") startPre();
+  });
+
+  resetBtn.addEventListener("click", resetAll);
+
+  resetAll();
+})();
+</script>
+</body>
+</html>
